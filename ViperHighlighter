@@ -1,0 +1,309 @@
+using System;
+using System.Collections.Generic;
+using System.Numerics;
+using System.Reflection;
+using Dalamud.Game;
+using Dalamud.Game.ClientState;
+using Dalamud.Game.ClientState.Objects.SubKinds;
+using Dalamud.Game.Gui;
+using Dalamud.Interface;
+using Dalamud.IoC;
+using Dalamud.Logging;
+using Dalamud.Plugin;
+using ImGuiNET;
+
+namespace ViperHighlighter
+{
+    public sealed class Plugin : IDalamudPlugin
+    {
+        public string Name => "ViperHighlighter";
+
+        private readonly DalamudPluginInterface pi;
+        private readonly ClientState clientState;
+        private readonly Framework framework;
+        private readonly GameGui gameGui;
+
+        private readonly Configuration config;
+
+        private bool configOpen = false;
+
+        public Plugin(DalamudPluginInterface pluginInterface)
+        {
+            this.pi = pluginInterface;
+            this.clientState = pluginInterface.GetRequiredService<ClientState>();
+            this.framework = pluginInterface.GetRequiredService<Framework>();
+            this.gameGui = pluginInterface.GetRequiredService<GameGui>();
+
+            this.config = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+
+            pluginInterface.UiBuilder.Draw += Draw;
+            pluginInterface.UiBuilder.OpenConfigUi += OpenConfig;
+
+            PluginLog.Information("ViperHighlighter loaded");
+        }
+
+        private void OpenConfig()
+        {
+            configOpen = true;
+        }
+
+        public void Dispose()
+        {
+            this.pi.UiBuilder.Draw -= Draw;
+            this.pi.UiBuilder.OpenConfigUi -= OpenConfig;
+        }
+
+        private void Draw()
+        {
+            try
+            {
+                if (configOpen)
+                {
+                    DrawConfigWindow();
+                }
+
+                var me = clientState.LocalPlayer;
+                if (me == null) return;
+
+                var target = me.TargetObject as BattleCharacter;
+                if (target == null) return;
+
+                var hasBack = HasAnyStatusId(target, config.BackEffectIds);
+                var hasSide = HasAnyStatusId(target, config.SideEffectIds);
+
+                if (!hasBack && !hasSide) return;
+
+                var pos = target.Position;
+                var yaw = GetYawFromObject(target);
+
+                var dl = ImGui.GetForegroundDrawList();
+
+                if (hasBack)
+                    DrawConeOnScreen(dl, pos, yaw + MathF.PI, config.BackColor, config.ConeAngleRad, config.ConeDistance, config.Segments);
+                if (hasSide)
+                {
+                    DrawConeOnScreen(dl, pos, yaw + MathF.PI / 2f, config.SideColor, config.ConeAngleRad, config.ConeDistance, config.Segments);
+                    DrawConeOnScreen(dl, pos, yaw - MathF.PI / 2f, config.SideColor, config.ConeAngleRad, config.ConeDistance, config.Segments);
+                }
+            }
+            catch (Exception ex)
+            {
+                PluginLog.Error(ex, "Error in Draw");
+            }
+        }
+
+        private bool HasAnyStatusId(BattleCharacter target, List<uint> ids)
+        {
+            if (ids == null || ids.Count == 0) return false;
+
+            // target.StatusList のアイテムに含まれるステータスIDを反射で取得して比較
+            var statusList = target.StatusList;
+            if (statusList == null) return false;
+
+            foreach (var s in statusList)
+            {
+                try
+                {
+                    var sid = GetStatusId(s);
+                    if (sid != null && ids.Contains(sid.Value)) return true;
+                }
+                catch { /* ignore individual failures */ }
+            }
+            return false;
+        }
+
+        private uint? GetStatusId(object statusObj)
+        {
+            if (statusObj == null) return null;
+            // 試行するプロパティ名の候補
+            var candidates = new[] { "StatusId", "Id", "EffectId", "BuffId", "Status" };
+            var t = statusObj.GetType();
+            foreach (var name in candidates)
+            {
+                var pi = t.GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
+                if (pi != null)
+                {
+                    var val = pi.GetValue(statusObj);
+                    if (val is int i) return (uint)i;
+                    if (val is uint u) return u;
+                    if (val is short s) return (uint)s;
+                    if (val is ushort us) return (uint)us;
+                    if (val is long l) return (uint)l;
+                    if (val is ulong ul) return (uint)ul;
+                }
+            }
+
+            // 一部 API ではフィールドに格納されていることがある
+            foreach (var name in candidates)
+            {
+                var fi = t.GetField(name, BindingFlags.Public | BindingFlags.Instance);
+                if (fi != null)
+                {
+                    var val = fi.GetValue(statusObj);
+                    if (val is int i) return (uint)i;
+                    if (val is uint u) return u;
+                    if (val is short s) return (uint)s;
+                    if (val is ushort us) return (uint)us;
+                    if (val is long l) return (uint)l;
+                    if (val is ulong ul) return (uint)ul;
+                }
+            }
+
+            return null;
+        }
+
+        private float GetYawFromObject(BattleCharacter bc)
+        {
+            // 一部 API は Rotation (Quaternion)、一部は Facing (float) を持つ
+            try
+            {
+                // try Facing property
+                var p = bc.GetType().GetProperty("Facing");
+                if (p != null)
+                {
+                    var v = p.GetValue(bc);
+                    if (v is float f) return f;
+                    if (v is double d) return (float)d;
+                }
+            }
+            catch { }
+
+            try
+            {
+                var p = bc.GetType().GetProperty("Rotation");
+                if (p != null)
+                {
+                    var v = p.GetValue(bc);
+                    if (v is System.Numerics.Quaternion q) return QuaternionToYaw(q);
+                    if (v is float f) return f;
+                }
+            }
+            catch { }
+
+            // fallback
+            return 0f;
+        }
+
+        private float QuaternionToYaw(System.Numerics.Quaternion q)
+        {
+            var siny_cosp = 2f * (q.W * q.Y + q.Z * q.X);
+            var cosy_cosp = 1f - 2f * (q.Y * q.Y + q.Z * q.Z);
+            return MathF.Atan2(siny_cosp, cosy_cosp);
+        }
+
+        private void DrawConeOnScreen(ImDrawListPtr dl, Vector3 origin, float directionRad, uint colorU32, float halfAngleRad, float distance, int segments)
+        {
+            var screenPts = new List<Vector2>();
+            var center = WorldToScreenChecked(origin);
+            if (!center.HasValue) return;
+            screenPts.Add(center.Value);
+
+            for (int i = 0; i <= segments; i++)
+            {
+                var t = (float)i / segments;
+                var angle = directionRad - halfAngleRad + t * (2f * halfAngleRad);
+                var dir = new Vector3(MathF.Sin(angle), 0f, MathF.Cos(angle));
+                var wpt = new Vector3(origin.X + dir.X * distance, origin.Y, origin.Z + dir.Z * distance);
+                var sc = WorldToScreenChecked(wpt);
+                if (sc.HasValue) screenPts.Add(sc.Value);
+            }
+
+            if (screenPts.Count >= 3)
+            {
+                dl.AddConvexPolyFilled(screenPts.ToArray(), colorU32);
+                dl.AddPolyline(screenPts.ToArray(), 2, colorU32, true, 2f);
+            }
+        }
+
+        private Vector2? WorldToScreenChecked(Vector3 world)
+        {
+            try
+            {
+                if (gameGui.WorldToScreen(world, out var s))
+                    return s;
+            }
+            catch { }
+            return null;
+        }
+
+        private void DrawConfigWindow()
+        {
+            ImGui.SetNextWindowSize(new Vector2(420, 260), ImGuiCond.FirstUseEver);
+            ImGui.Begin("ViperHighlighter Config", ref configOpen, ImGuiWindowFlags.AlwaysAutoResize);
+
+            ImGui.TextWrapped("Effect IDs (背面系): カンマ区切りの数値（例: 4093,4094）");
+            var backText = string.Join(",", config.BackEffectIds);
+            var backBuf = backText;
+            if (ImGui.InputText("Back Effect IDs", ref backBuf, 512))
+            {
+                config.BackEffectIds = ParseIdList(backBuf);
+                pi.SavePluginConfig(config);
+            }
+
+            ImGui.TextWrapped("Effect IDs (側面系): カンマ区切りの数値（例: 4095,4096）");
+            var sideText = string.Join(",", config.SideEffectIds);
+            var sideBuf = sideText;
+            if (ImGui.InputText("Side Effect IDs", ref sideBuf, 512))
+            {
+                config.SideEffectIds = ParseIdList(sideBuf);
+                pi.SavePluginConfig(config);
+            }
+
+            var backVec = config.BackColorVec4;
+            if (ImGui.ColorEdit4("Back Color", ref backVec))
+            {
+                config.BackColorVec4 = backVec;
+                pi.SavePluginConfig(config);
+            }
+
+            var sideVec = config.SideColorVec4;
+            if (ImGui.ColorEdit4("Side Color", ref sideVec))
+            {
+                config.SideColorVec4 = sideVec;
+                pi.SavePluginConfig(config);
+            }
+
+            if (ImGui.SliderFloat("Cone half-angle (deg)", ref config.ConeAngleDegHalf, 5f, 90f))
+            {
+                config.ConeAngleRad = MathF.PI * config.ConeAngleDegHalf / 180f;
+                pi.SavePluginConfig(config);
+            }
+
+            if (ImGui.SliderFloat("Cone distance (m)", ref config.ConeDistance, 1f, 50f))
+            {
+                pi.SavePluginConfig(config);
+            }
+
+            if (ImGui.InputInt("Segments", ref config.Segments))
+            {
+                if (config.Segments < 6) config.Segments = 6;
+                pi.SavePluginConfig(config);
+            }
+
+            if (ImGui.Button("Save"))
+            {
+                pi.SavePluginConfig(config);
+                configOpen = false;
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("Close"))
+            {
+                configOpen = false;
+            }
+
+            ImGui.End();
+        }
+
+        private List<uint> ParseIdList(string text)
+        {
+            var outList = new List<uint>();
+            if (string.IsNullOrWhiteSpace(text)) return outList;
+            var parts = text.Split(new[] { ',', ' ', ';' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var p in parts)
+            {
+                if (uint.TryParse(p.Trim(), out var v)) outList.Add(v);
+            }
+            return outList;
+        }
+    }
+}
