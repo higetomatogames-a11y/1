@@ -1,0 +1,57 @@
+using System;
+using System.Collections.Generic;
+using System.Numerics;
+using Dalamud.Configuration;
+
+namespace ViperHighlighter
+{
+    [Serializable]
+    public class Configuration : IPluginConfiguration
+    {
+        public int Version { get; set; } = 1;
+
+        // デフォルト値を指定 (ユーザー提供の ID を反映済み)
+        public List<uint> BackEffectIds { get; set; } = new List<uint> { 4093, 4094 };
+        public List<uint> SideEffectIds { get; set; } = new List<uint> { 4095, 4096 };
+
+        // ARGB 形式の色
+        public uint BackColor { get; set; } = 0x80FF0000; // 半透明赤 (ARGB)
+        public uint SideColor { get; set; } = 0x800000FF; // 半透明青
+
+        // ImGui.ColorEdit4 用の補助プロパティ
+        public Vector4 BackColorVec4
+        {
+            get => U32ToVec4(BackColor);
+            set => BackColor = Vec4ToU32(value);
+        }
+        public Vector4 SideColorVec4
+        {
+            get => U32ToVec4(SideColor);
+            set => SideColor = Vec4ToU32(value);
+        }
+
+        // 扇形設定
+        public float ConeAngleDegHalf { get; set; } = 30f; // 片側の角度（度）
+        [NonSerialized] public float ConeAngleRad = (float)(Math.PI * 30.0 / 180.0);
+        public float ConeDistance { get; set; } = 12f;
+        public int Segments { get; set; } = 24;
+
+        private Vector4 U32ToVec4(uint c)
+        {
+            var a = (c >> 24) & 0xFF;
+            var r = (c >> 16) & 0xFF;
+            var g = (c >> 8) & 0xFF;
+            var b = (c) & 0xFF;
+            return new Vector4(r / 255f, g / 255f, b / 255f, a / 255f);
+        }
+
+        private uint Vec4ToU32(Vector4 v)
+        {
+            byte r = (byte)MathF.Clamp(v.X * 255f, 0, 255);
+            byte g = (byte)MathF.Clamp(v.Y * 255f, 0, 255);
+            byte b = (byte)MathF.Clamp(v.Z * 255f, 0, 255);
+            byte a = (byte)MathF.Clamp(v.W * 255f, 0, 255);
+            return (uint)((a << 24) | (r << 16) | (g << 8) | b);
+        }
+    }
+}
