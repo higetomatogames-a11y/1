@@ -1,0 +1,12 @@
+{
+  "Author": "higetomatogames-a11y",
+  "Name": "ViperHighlighter",
+  "Website": "",
+  "Repository": "",
+  "Tags": [ "a11y", "visual", "highlight" ],
+  "Dll": "ViperHighlighter.dll",
+  "LoadPriority": 0,
+  "Enabled": true,
+  "IsPluginDll": true,
+  "SigName": ""
+}
